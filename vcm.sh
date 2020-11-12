@@ -505,6 +505,38 @@ function cloneVM() {
 
 ## END CLONE VM
 
+## DELETE VM
+
+function deleteSpecificVM() {
+    stopIfNotCorrectParamValue 1 $#
+    local vmName=$1
+    info "Going to remove $vmName VM"
+    VBoxManage unregistervm $vmName --delete && rc=$? || rc=$?
+    debug "END remove VMs with name $vmName."
+}
+
+function deleteVm() {
+    stopIfNotCorrectParamValue 1 $#
+    local param=$1
+
+    case $param in
+    all)
+        confirm "Are you sure you want to remove entire VM cluster (defnined in $__vms_out_file__)" || script_exit "Operation stopped by the user." 0
+        for vm in $(awk '{print $1}' $__vms_out_file__); do
+            deleteSpecificVM "$vm"
+        done
+        rm $__vms_out_file__
+        ;;
+    *)
+        confirm "Are you sure to remove $param" || script_exit "Operation stopped by the user." 0
+        deleteSpecificVM "$param"
+        ;;
+    esac
+    info "End process of VMs removal."
+}
+
+## END DELETE VM
+
 ## STOP VM
 
 function stopSpecificVM() {
@@ -512,12 +544,7 @@ function stopSpecificVM() {
     local vmName=$1
 
     debug "Going to stop machine with name $vmName."
-    
-    VBoxManage controlvm "$vmName" $behavior && rc=$? || rc=$?  
-    if [ $rc -ne 0 ]; then
-        info "VBoxManage: $vmName $behavior"
-    fi
-    
+    VBoxManage controlvm "$vmName" $behavior && rc=$? || rc=$?
     debug "End Stop machine $vmName started."
 }
 
@@ -552,11 +579,12 @@ function stopVm() {
 ## START VM
 
 function startSpecificVM() {
-    stopIfNotCorrectParamValue 1 $#
+    stopIfNotCorrectParamValue 2 $#
     local vmName=$1
+    local behavior=$2
 
     debug "Going to run Virtual machine with name $vmName."
-    VBoxManage startvm "$vmName" --type $behavior
+    VBoxManage startvm "$vmName" --type $behavior && rc=$? || rc=$?
     debug "Virtual machine $vmName started."
 }
 
@@ -579,7 +607,7 @@ function startVM() {
     esac
 
     if [ $# -eq 2 ]; then
-        startSpecificVM "$2"
+        startSpecificVM "$2" "$behavior"
     fi
 
     stopIfNotCorrectParamValue 1 $#
@@ -587,7 +615,7 @@ function startVM() {
     info "Going to start all vmstack."
 
     for vm in $(awk '{print $1}' $__vms_out_file__); do
-        startSpecificVM "$vm"
+        startSpecificVM "$vm" "$behavior"
     done
     info "VMs stack started."
 }
@@ -622,6 +650,10 @@ function parse_params() {
             ;;
         stop)
             stopVm "$@"
+            exit
+            ;;
+        delete)
+            deleteVm "$@"
             exit
             ;;
         start)
