@@ -358,12 +358,23 @@ function confirm() {
   done
 }
 
-function stopIfNotCorrectParamValue() {
+function stopIfNotCorrectParamAmount() {
   local expectedParamValue=$1
   local actualNumber=$2
 
   if [ ! $expectedParamValue -eq $actualNumber ]; then
     error "Incorrect numbers of parameters! Expected: $expectedParamValue "
+    script_usage
+    exit 1
+  fi
+}
+
+function stopIfSmallParamAmount() {
+  local expectedMinimum=$1
+  local actualNumber=$2
+
+  if [ $expectedMinimum -gt $actualNumber ]; then
+    error "Incorrect numbers of parameters! It should be at least: $expectedMinimum "
     script_usage
     exit 1
   fi
@@ -414,7 +425,7 @@ function installVboxIfMissing() {
 
 # Save list of current VMS into file
 function dumpVmListMain() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local param=$1
 
   case $param in
@@ -440,7 +451,7 @@ function dumpVmListMain() {
 }
 
 function updateVmList() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
 
   local vm_list=$1
   info "Updating mange file: $__vms_out_file__"
@@ -468,7 +479,7 @@ function cloneVmMain() {
     cloneSpecificVM "$1" "$2"
     exit 0
   fi
-  stopIfNotCorrectParamValue 3 $#
+  stopIfNotCorrectParamAmount 3 $#
 
   local sourceVm=$1
   local destVmPrefix=$2
@@ -490,7 +501,7 @@ function cloneVmMain() {
 ## DELETE VM
 
 function deleteSpecificVM() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
   info "Going to remove $vmName VM"
   VBoxManage unregistervm $vmName --delete && rc=$? || rc=$?
@@ -498,7 +509,7 @@ function deleteSpecificVM() {
 }
 
 function deleteVmMain() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local param=$1
 
   case $param in
@@ -522,15 +533,15 @@ function deleteVmMain() {
 ## STOP VM
 
 function isMachineRunning() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
 
   VBoxManage list runningvms | grep "$vmName" &>/dev/null && rc=$? || rc=$?
-  echo $(( !$rc ))
+  echo $((!$rc))
 }
 
 function waitToStopMachineOrAskToKill() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
 
   if [[ $(isMachineRunning $vmName) -eq 1 ]]; then
@@ -550,7 +561,7 @@ function waitToStopMachineOrAskToKill() {
 }
 
 function stopMachineCommand() {
-  stopIfNotCorrectParamValue 2 $#
+  stopIfNotCorrectParamAmount 2 $#
   local vmName=$1
   local stopBehavior=$2
 
@@ -564,7 +575,7 @@ function stopMachineCommand() {
 }
 
 function stopSpecificVM() {
-  stopIfNotCorrectParamValue 2 $#
+  stopIfNotCorrectParamAmount 2 $#
   local vmName=$1
   local stopBehavior=$2
 
@@ -573,6 +584,7 @@ function stopSpecificVM() {
 }
 
 function stopVmMain() {
+  stopIfSmallParamAmount 2 $#
   local param=$1
 
   case $param in
@@ -598,7 +610,7 @@ function stopVmMain() {
     exit 0
   fi
 
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
 
   info "Going to $stopBehavior action to all vmstack."
   local vmList=$(awk '{print $1}' $__vms_out_file__)
@@ -616,7 +628,7 @@ function stopVmMain() {
 ## START VM
 
 function startSpecificVM() {
-  stopIfNotCorrectParamValue 2 $#
+  stopIfNotCorrectParamAmount 2 $#
   local vmName=$1
   local startBehavior=$2
 
@@ -652,7 +664,7 @@ function startVmMain() {
     exit 0
   fi
 
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
 
   info "Going to start all vmstack."
 
@@ -667,7 +679,7 @@ function startVmMain() {
 ## RESTART VM
 
 function restartSpecificVm() {
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
 
   info "Going to restart VM with name $vmName"
@@ -682,7 +694,7 @@ function restartVmMain() {
     exit 0
   fi
 
-  stopIfNotCorrectParamValue 0 $#
+  stopIfNotCorrectParamAmount 0 $#
 
   for vm in $(awk '{print $1}' $__vms_out_file__); do
     restartSpecificVm "$vm"
@@ -712,7 +724,7 @@ function getVmMain() {
 ## EXEC
 
 function execSpecificVM() {
-  stopIfNotCorrectParamValue 2 $#
+  stopIfNotCorrectParamAmount 2 $#
   local vm=$1
   local command=$2
 
@@ -728,7 +740,7 @@ function execVmMain() {
     execSpecificVM "$2" "$command"
     exit 0
   fi
-  stopIfNotCorrectParamValue 1 $#
+  stopIfNotCorrectParamAmount 1 $#
   for vm in $(awk '{print $1}' $__vms_out_file__); do
     execSpecificVM "$vm" "$command"
   done
@@ -737,6 +749,22 @@ function execVmMain() {
 }
 
 ## END EXEC
+
+## COMMAND
+
+function commandVmMain() {
+  stopIfNotCorrectParamAmount 1 $#
+  local commandInput="$1"
+
+  info "Running command on all cluster VMs."
+  for vm in $(awk '{print $1}' $__vms_out_file__); do
+    local command=$(echo "$commandInput" | sed "s/#vm/$vm/gi")
+    $command
+  done
+  debug "END Running command on all cluster VMs."
+}
+
+## END COMMAND
 
 ############################### END CORE FUNCTIONS ###############################
 
@@ -786,6 +814,10 @@ function parse_params() {
       ;;
     exe | exec)
       execVmMain "$@"
+      exit
+      ;;
+    command)
+      commandVmMain "$@"
       exit
       ;;
     help)
