@@ -11,6 +11,10 @@ set -o errtrace # Make sure any error trap is inherited
 set -o nounset  # Disallow expansion of unset variables
 set -o pipefail # Use last non-zero exit code in a pipeline
 
+############################### GLOBALS ##########################################
+__vms_out_file__="vm_list.txt"
+############################### END GLOBALS ######################################
+
 ############################### HELPERS ##########################################
 #Helpers based on https://github.com/ralish/bash-script-template
 
@@ -280,11 +284,19 @@ function stopIfEmpty() {
   fi
 }
 
-############################### END HELPERS ######################################
+function stopIfManageVmFileNotExistsOrEmpty() {
+  if [ -f $__vms_out_file__ ]; then
+    if [ ! -s $__vms_out_file__ ]; then
+      error "Vm list manage file $__vms_out_file__ is empty. Fill file using clone or dumplist functions or fill it manually."
+      exit 1
+    fi
+  else
+    error "Vm list manage file $__vms_out_file__ doesn't exist. Create file using clone or dumplist function."
+    exit 1
+  fi
+}
 
-############################### GLOBALS ##########################################
-__vms_out_file__="vm_list.txt"
-############################### END GLOBALS ######################################
+############################### END HELPERS ######################################
 
 ############################### CORE FUNCTIONS ###################################
 
@@ -316,7 +328,7 @@ Usage:
      dumplist run                                               Save list of running VMs currently into manage file.
      help                                                       Displays this help
 
-     SPECIAL FLAGS (ENVIRONMENT VARIABLES):
+   SPECIAL FLAGS (ENVIRONMENT VARIABLES):
      NO_CONFIRM                If true you will be never asked for confirmation so script run with default states
      DEBUG                     For script debugging purpose
      VERBOSE                   Detailed information for running script
@@ -324,15 +336,19 @@ EOF
 
 }
 
+## INSTALL VBOX
+
 function installVboxIfMissing() {
   which VBoxManage &>/dev/null && rc=$? || rc=$?
   if [ $rc -ne 0 ]; then
-    confirm "Virtualbox missing... Do you want to install VirtualBox?" || fatal "Virtualbox is needed to use scripts. Exiting..."
+    confirm "Virtualbox missing... Do you want to install VirtualBox?" || fatal "Virtualbox is needed to use this script. Exiting..."
     sudo apt install -y "virtualbox"
     sudo apt install -y "guest−additions−iso"
     info "End of installation Virtualbox"
   fi
 }
+
+## END INSTALL VBOX
 
 ## UPDATE VM LIST
 
@@ -358,16 +374,16 @@ function dumpVmListMain() {
   local vm_list
   vm_list=$(VBoxManage list $vmType | grep '".*"' --only-matching | sed 's/"//g')
   stopIfEmpty "$vm_list" "No VM found."
-  info "List of VMS: \n $vm_list"
+  info "List of VMS: $vm_list"
   updateVmList "$vm_list"
   info "End of dump process."
 }
 
 function removeLineFromVmList() {
-    stopIfNotCorrectParamAmount 1 $#
-    local vmName=$1
+  stopIfNotCorrectParamAmount 1 $#
+  local vmName=$1
 
-    sed -i /$vmName/d  $__vms_out_file__
+  sed -i /$vmName/d $__vms_out_file__
 }
 
 function updateVmList() {
@@ -441,6 +457,7 @@ function deleteVmMain() {
   fi
 
   stopIfNotCorrectParamAmount 1 $#
+  stopIfManageVmFileNotExistsOrEmpty
   local param=$1
 
   case $param in
@@ -537,6 +554,7 @@ function stopVmMain() {
   fi
 
   stopIfNotCorrectParamAmount 1 $#
+  stopIfManageVmFileNotExistsOrEmpty
 
   info "Going to $stopBehavior action to all vmstack."
   local vmList=$(awk '{print $1}' $__vms_out_file__)
@@ -591,6 +609,7 @@ function startVmMain() {
   fi
 
   stopIfNotCorrectParamAmount 1 $#
+  stopIfManageVmFileNotExistsOrEmpty
 
   info "Going to start all vmstack."
 
@@ -621,6 +640,7 @@ function restartVmMain() {
   fi
 
   stopIfNotCorrectParamAmount 0 $#
+  stopIfManageVmFileNotExistsOrEmpty
 
   for vm in $(awk '{print $1}' $__vms_out_file__); do
     restartSpecificVm "$vm"
@@ -667,6 +687,8 @@ function execVmMain() {
     exit 0
   fi
   stopIfNotCorrectParamAmount 1 $#
+  stopIfManageVmFileNotExistsOrEmpty
+
   for vm in $(awk '{print $1}' $__vms_out_file__); do
     execSpecificVM "$vm" "$command"
   done
@@ -680,6 +702,7 @@ function execVmMain() {
 
 function commandVmMain() {
   stopIfNotCorrectParamAmount 1 $#
+  stopIfManageVmFileNotExistsOrEmpty
   local commandInput="$1"
 
   info "Running command on all cluster VMs."
