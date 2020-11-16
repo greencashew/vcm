@@ -214,120 +214,10 @@ function pretty_print() {
   fi
 }
 
-# DESC: Combines two path variables and removes any duplicates
-# ARGS: $1 (required): Path(s) to join with the second argument
-#       $2 (optional): Path(s) to join with the first argument
-# OUTS: $build_path: The constructed path
-# NOTE: Heavily inspired by: https://unix.stackexchange.com/a/40973
-function build_path() {
-  if [[ $# -lt 1 ]]; then
-    script_exit 'Missing required argument to build_path()!' 2
-  fi
-
-  local new_path path_entry temp_path
-
-  temp_path="$1:"
-  if [[ -n ${2-} ]]; then
-    temp_path="$temp_path$2:"
-  fi
-
-  new_path=
-  while [[ -n $temp_path ]]; do
-    path_entry="${temp_path%%:*}"
-    case "$new_path:" in
-    *:"$path_entry":*) ;;
-    *)
-      new_path="$new_path:$path_entry"
-      ;;
-    esac
-    temp_path="${temp_path#*:}"
-  done
-
-  # shellcheck disable=SC2034
-  build_path="${new_path#:}"
-}
-
-# DESC: Check a binary exists in the search path
-# ARGS: $1 (required): Name of the binary to test for existence
-#       $2 (optional): Set to any value to treat failure as a fatal error
-# OUTS: None
-function check_binary() {
-  if [[ $# -lt 1 ]]; then
-    script_exit 'Missing required argument to check_binary()!' 2
-  fi
-
-  if ! command -v "$1" >/dev/null 2>&1; then
-    if [[ -n ${2-} ]]; then
-      script_exit "Missing dependency: Couldn't locate $1." 1
-    else
-      debug "Missing dependency: $1" "${fg_red-}"
-      return 1
-    fi
-  fi
-
-  debug "Found dependency: $1"
-  return 0
-}
-
-# DESC: Validate we have superuser access as root (via sudo if requested)
-# ARGS: $1 (optional): Set to any value to not attempt root access via sudo
-# OUTS: None
-function check_superuser() {
-  local superuser
-  if [[ $EUID -eq 0 ]]; then
-    superuser=true
-  elif [[ -z ${1-} ]]; then
-    if check_binary sudo; then
-      debug 'Sudo: Updating cached credentials ...'
-      if ! sudo -v; then
-        debug "Sudo: Couldn't acquire credentials ..." \
-          "${fg_red-}"
-      else
-        local test_euid
-        test_euid="$(sudo -H -- "$BASH" -c 'printf "%s" "$EUID"')"
-        if [[ $test_euid -eq 0 ]]; then
-          superuser=true
-        fi
-      fi
-    fi
-  fi
-
-  if [[ -z ${superuser-} ]]; then
-    debug 'Unable to acquire superuser credentials.' "${fg_red-}"
-    return 1
-  fi
-
-  debug 'Successfully acquired superuser credentials.'
-  return 0
-}
-
-# DESC: Run the requested command as root (via sudo if requested)
-# ARGS: $1 (optional): Set to zero to not attempt execution via sudo
-#       $@ (required): Passed through for execution as root user
-# OUTS: None
-function run_as_root() {
-  if [[ $# -eq 0 ]]; then
-    script_exit 'Missing required argument to run_as_root()!' 2
-  fi
-
-  if [[ ${1-} =~ ^0$ ]]; then
-    local skip_sudo=true
-    shift
-  fi
-
-  if [[ $EUID -eq 0 ]]; then
-    "$@"
-  elif [[ -z ${skip_sudo-} ]]; then
-    sudo -H -- "$@"
-  else
-    script_exit "Unable to run requested command as root: $*" 1
-  fi
-}
-
 info() { pretty_print "[INFO] $*" "${fg_white-}"; }
-debug() {
-  if [[ ${DEBUG-} =~ ^1|yes|true$ ]]; then
-    pretty_print "[DEBUG] $@"
+trace() {
+  if [[ ${VERBOSE-} =~ ^1|yes|true$ ]]; then
+    pretty_print "[TRACE] $@"
   fi
 }
 warning() { pretty_print "[WARNING] $*" "${fg_cyan-}"; }
@@ -338,24 +228,28 @@ fatal() {
 }
 
 function confirm() {
-  local _prompt _default _response
+  if [[ ! ${NO_CONFIRM-} =~ ^1|yes|true$ ]]; then
 
-  if [ "$1" ]; then _prompt="$1"; else _prompt="Are you sure"; fi
-  _prompt="$_prompt [y/n] ?"
+    local _prompt _default _response
 
-  while true; do
-    read -r -p "$_prompt " _response
-    case "$_response" in
-    [Yy][Ee][Ss] | [Yy]) # Yes or Y (case-insensitive).
-      return 0
-      ;;
-    [Nn][Oo] | [Nn]) # No or N.
-      return 1
-      ;;
-    *) # Anything else (including a blank) is invalid.
-      ;;
-    esac
-  done
+    if [ "$1" ]; then _prompt="$1"; else _prompt="Are you sure"; fi
+    _prompt="$_prompt [y/n] ?"
+
+    while true; do
+      read -r -p "$_prompt " _response
+      case "$_response" in
+      [Yy][Ee][Ss] | [Yy]) # Yes or Y (case-insensitive).
+        return 0
+        ;;
+      [Nn][Oo] | [Nn]) # No or N.
+        return 1
+        ;;
+      *) # Anything else (including a blank) is invalid.
+        ;;
+      esac
+    done
+
+  fi
 }
 
 function stopIfNotCorrectParamAmount() {
@@ -400,13 +294,32 @@ __vms_out_file__="vm_list.txt"
 function script_usage() {
   cat <<EOF
 Usage:
-     clone "sourceVmName" "destinationVmName"                   Clone VM                  
-     clone "sourceVmName" "destinationVmName" number_of_copies  Create multiple clones of virtualmachine
-        example: clone "vm1" "vm_cluster" 5         It creates 5 clones with name vm_cluster-1, vm_cluster-2, vm_cluster-3, vm_cluster-4, vm_cluster-5
-     
-     dumpVmListMain all                                 Save list of all VMs currently registered on virtualbox into manage file.    
-     dumpVmListMain run                                 Save list of running VMs currently into manage file.
-     help                                           Displays this help
+ ./vcm.sh [parameters]
+     start behavior                                             Start VM stack defined in file, possible behaviors: headless, separate, gui
+     start behavior destinationVmName                           Start specific VM
+        start h                                                    Start vm stack in headless state
+     stop behavior                                              Stop cluster with specific behavior: acpi, savestate, poweroff, pause
+                                                                If machine not turning within 40 sec ask about killing VirtualMachine
+     stop behavior destinationVmName                            Stop specific virtualmachine
+        stop a                                                     Stop vm stack with acpi power button
+     clone "sourceVmName" "destinationVmName"                   Clone specific vm one time, you can only clone already registered vm
+     clone "sourceVmName" "destinationVmName" number_of_copies  Create multiple clones of virtual machine
+        clone "vm1" "vm_cluster" 3                                 It creates 5 clones with name vm_cluster-1, vm_cluster-2, vm_cluster-3
+                                                                   After clone script ask for updating vm list in text file
+     restart                                                    Restart all cluster, Stopping behavior: acpi power, Starting behavior: headless
+     restart destinationVmName                                  Restart specific vm
+     command "some command"                                     Run command vms times on host, to substitute vm name write: #vm
+        command "VBoxManage startvm "#vm" --type headless"
+     delete                                                     Delete all VMs defined in the mange file
+     delete destinationVmName                                   Delete specific virtual machine
+     dumplist all                                               Save list of all VMs currently registered on virtualbox into manage file.
+     dumplist run                                               Save list of running VMs currently into manage file.
+     help                                                       Displays this help
+
+     SPECIAL FLAGS (ENVIRONMENT VARIABLES):
+     NO_CONFIRM                If true you will be never asked for confirmation so script run with default states
+     DEBUG                     For script debugging purpose
+     VERBOSE                   Detailed information for running script
 EOF
 
 }
@@ -450,6 +363,13 @@ function dumpVmListMain() {
   info "End of dump process."
 }
 
+function removeLineFromVmList() {
+    stopIfNotCorrectParamAmount 1 $#
+    local vmName=$1
+
+    sed -i /$vmName/d  $__vms_out_file__
+}
+
 function updateVmList() {
   stopIfNotCorrectParamAmount 1 $#
 
@@ -459,7 +379,7 @@ function updateVmList() {
   for val in ${vm_list[*]}; do
     printf "%s\n" "$val" >>$__vms_out_file__
   done
-  debug "End of update manage file: $__vms_out_file__"
+  trace "End of update manage file: $__vms_out_file__"
 }
 
 ## END UPDATE VM LIST
@@ -471,7 +391,7 @@ function cloneSpecificVM() {
   local destVmName=$2
   info "Creating copy VM from $sourceVm to $destVmName"
   VBoxManage clonevm "$sourceVm" --name "$destVmName" --register
-  debug "END copy VM from $sourceVm to $destVmName"
+  trace "END copy VM from $sourceVm to $destVmName"
 }
 
 function cloneVmMain() {
@@ -504,28 +424,33 @@ function deleteSpecificVM() {
   stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
   info "Going to remove $vmName VM"
-  VBoxManage unregistervm $vmName --delete && rc=$? || rc=$?
-  debug "END remove VMs with name $vmName."
+  VBoxManage unregistervm "$vmName" --delete && rc=$? || rc=$?
+  trace "END remove VMs with name $vmName."
 }
 
 function deleteVmMain() {
-  stopIfNotCorrectParamAmount 1 $#
-  local param=$1
-
-  case $param in
-  all)
+  if [ $# -eq 0 ]; then
     confirm "Are you sure you want to remove entire VM cluster (defnined in $__vms_out_file__)" || script_exit "Operation stopped by the user." 0
     for vm in $(awk '{print $1}' $__vms_out_file__); do
       deleteSpecificVM "$vm"
     done
+    trace "Going to remove $__vms_out_file__ file"
     rm $__vms_out_file__
-    ;;
+    info "End process of VMs removal."
+    exit 0
+  fi
+
+  stopIfNotCorrectParamAmount 1 $#
+  local param=$1
+
+  case $param in
   *)
     confirm "Are you sure to remove $param" || script_exit "Operation stopped by the user." 0
     deleteSpecificVM "$param"
+    removeLineFromVmList "$param"
     ;;
   esac
-  info "End process of VMs removal."
+
 }
 
 ## END DELETE VM
@@ -569,6 +494,7 @@ function stopMachineCommand() {
 
   if [ "$(isMachineRunning $vmName)" -eq 1 ]; then
     VBoxManage controlvm "$vmName" "$stopBehavior" && rc=$? || rc=$?
+    trace "End of stopping machine"
   else
     info "Machine $vmName already stopped."
   fi
@@ -584,7 +510,7 @@ function stopSpecificVM() {
 }
 
 function stopVmMain() {
-  stopIfSmallParamAmount 2 $#
+  stopIfSmallParamAmount 1 $#
   local param=$1
 
   case $param in
@@ -632,10 +558,10 @@ function startSpecificVM() {
   local vmName=$1
   local startBehavior=$2
 
-  debug "Going to run Virtual machine with name $vmName."
+  trace "Going to run Virtual machine with name $vmName."
   if [ $(isMachineRunning $vmName) -eq 0 ]; then
     VBoxManage startvm "$vmName" --type "$startBehavior" && rc=$? || rc=$?
-    debug "Virtual machine $vmName started."
+    trace "Virtual machine $vmName started."
   else
     info "Machine $vmName already started."
   fi
@@ -685,7 +611,7 @@ function restartSpecificVm() {
   info "Going to restart VM with name $vmName"
   stopSpecificVM "$vmName" "acpipowerbutton"
   startSpecificVM "$vmName" "headless"
-  debug "END restart VM with name $vmName"
+  trace "END restart VM with name $vmName"
 }
 
 function restartVmMain() {
@@ -728,9 +654,9 @@ function execSpecificVM() {
   local vm=$1
   local command=$2
 
-  debug "Running ssh command: $command on $vm "
+  trace "Running ssh command: $command on $vm "
   ssh -o "StrictHostKeyChecking=no" -t "$vm" "$command"
-  debug "End of ssh command: $command on $vm "
+  trace "End of ssh command: $command on $vm "
 }
 
 function execVmMain() {
@@ -761,7 +687,7 @@ function commandVmMain() {
     local command=$(echo "$commandInput" | sed "s/#vm/$vm/gi")
     $command
   done
-  debug "END Running command on all cluster VMs."
+  trace "END Running command on all cluster VMs."
 }
 
 ## END COMMAND
