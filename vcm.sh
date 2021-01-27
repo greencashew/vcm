@@ -261,7 +261,7 @@ function stopIfNotCorrectParamAmount() {
   local actualNumber=$2
 
   if [ ! $expectedParamValue -eq $actualNumber ]; then
-    error "Incorrect numbers of parameters! Expected: $expectedParamValue "
+    error "Incorrect numbers of parameters!"
     script_usage
     exit 1
   fi
@@ -311,7 +311,7 @@ Usage:
      start behavior destinationVmName                           Start specific VM
         start h                                                    Start vm stack in headless state
      stop behavior                                              Stop cluster with specific behavior: acpi, savestate, poweroff, pause
-                                                                If machine not turning within 40 sec ask about killing VirtualMachine
+                                                                If machine not turning within 40 sec script ask about killing VirtualMachine
      stop behavior destinationVmName                            Stop specific virtualmachine
         stop a                                                     Stop vm stack with acpi power button
      clone "sourceVmName" "destinationVmName"                   Clone specific vm one time, you can only clone already registered vm
@@ -320,8 +320,9 @@ Usage:
                                                                    After clone script ask for updating vm list in text file
      restart                                                    Restart all cluster, Stopping behavior: acpi power, Starting behavior: headless
      restart destinationVmName                                  Restart specific vm
-     command "some command"                                     Run command vms times on host, to substitute vm name write: #vm
+     command "some command"                                     Run command vms times on host, Patterns to substitute: vmname: #vm , index: #i
         command "VBoxManage startvm "#vm" --type headless"
+        command "vboxmanage controlvm #vm natpf1 'OpenSSH,tcp,,200#i,,22'"
      delete                                                     Delete all VMs defined in the mange file
      delete destinationVmName                                   Delete specific virtual machine
      dumplist all                                               Save list of all VMs currently registered on virtualbox into manage file.
@@ -439,6 +440,9 @@ function cloneVmMain() {
 function deleteSpecificVM() {
   stopIfNotCorrectParamAmount 1 $#
   local vmName=$1
+  if [[ $(isMachineRunning $vmName) -eq 1 ]]; then
+    stopSpecificVM "$vmName" "poweroff"
+  fi
   info "Going to remove $vmName VM"
   VBoxManage unregistervm "$vmName" --delete && rc=$? || rc=$?
   trace "END remove VMs with name $vmName."
@@ -487,7 +491,7 @@ function waitToStopMachineOrAskToKill() {
   local vmName=$1
 
   if [[ $(isMachineRunning $vmName) -eq 1 ]]; then
-    info "Machine $vmName is running waiting to stop"
+    info "Machine $vmName is running. Waiting to stop"
 
     for i in $(seq 1 40); do
       [[ $(isMachineRunning $vmName) -eq 1 ]] || return 0
@@ -642,26 +646,51 @@ function restartVmMain() {
   stopIfNotCorrectParamAmount 0 $#
   stopIfManageVmFileNotExistsOrEmpty
 
-  for vm in $(awk '{print $1}' $__vms_out_file__); do
-    restartSpecificVm "$vm"
-  done
+  stopVmMain acpi
+  startVmMain headless
 }
 
 ## END RESTART VM
 
 ## GET
 
+function getSpecificVmIp() {
+  stopIfNotCorrectParamAmount 1 $#
+  local vmName=$1
+
+  local ip=$(vboxmanage guestproperty get "$vmName" "/VirtualBox/GuestInfo/Net/0/V4/IP")
+  if [ "$ip" == "No value set!" ]; then
+    trace "No guest property set"
+    local vmId=$(vboxmanage list runningvms | grep "$vmName" | awk -F '[{}]' '{print $2}')
+    
+
+  fi
+}
+
 function getVmMain() {
+  stopIfSmallParamAmount 1 $#
   local param=$1
 
   case $param in
   ip)
-    local startBehavior="gui"
+    if [ $# -eq 2 ]; then
+      getSpecificVmIp "$2"
+      exit 0
+    fi
+
+    stopIfNotCorrectParamAmount 1 $#
+    stopIfManageVmFileNotExistsOrEmpty
+
+    for vm in $(awk '{print $1}' $__vms_out_file__); do
+      getSpecificVmIp "$vm"
+    done
     ;;
   *)
     script_exit "Invalid parameter was provided: $param" 1
     ;;
   esac
+
+  stopIfNotCorrectParamAmount 1 $#
 
 }
 
@@ -688,10 +717,15 @@ function execVmMain() {
   fi
   stopIfNotCorrectParamAmount 1 $#
   stopIfManageVmFileNotExistsOrEmpty
+  #
+  #  for vm in $(awk '{print $1}' $__vms_out_file__); do
+  #    execSpecificVM "$vm" "$command"
+  #  done
 
-  for vm in $(awk '{print $1}' $__vms_out_file__); do
-    execSpecificVM "$vm" "$command"
-  done
+  while IFS=$'\t' read -r vm login password ip port; do
+    info "$vm => $ip:$port"
+    echo "$password" | ssh -o "StrictHostKeyChecking=no" -p "$port" -t "$login@$ip" "$command"
+  done <$__vms_out_file__
 
   info "End of exec VM"
 }
@@ -706,11 +740,14 @@ function commandVmMain() {
   local commandInput="$1"
 
   info "Running command on all cluster VMs."
+  local index=0
   for vm in $(awk '{print $1}' $__vms_out_file__); do
-    local command=$(echo "$commandInput" | sed "s/#vm/$vm/gi")
+    local command=$(echo "$commandInput" | sed "s/#vm/$vm/gi" | sed "s/#i/$index/gi")
+    trace "$command"
     $command
+    ((index += 1))
   done
-  trace "END Running command on all cluster VMs."
+  info "END Running command on all cluster VMs."
 }
 
 ## END COMMAND
